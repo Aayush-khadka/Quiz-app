@@ -2,7 +2,6 @@ import express from "express";
 import cors from "cors";
 import { Server } from "socket.io";
 import { createServer } from "http";
-import { disconnect } from "process";
 import dotenv from "dotenv";
 import Connect_db from "./config/connectdb.js";
 
