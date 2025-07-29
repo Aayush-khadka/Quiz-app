@@ -7,6 +7,7 @@ import Connect_db from "./config/connectdb.js";
 
 import roomRoutes from "./routes/room.routes.js";
 import playerRoutes from "./routes/player.routes.js";
+import questionRoutes from "./routes/questions.routes.js";
 
 import roomSocketHandler from "./sockets/roomsocket.js";
 dotenv.config();
@@ -29,6 +30,7 @@ const io = new Server(server, {
 
 app.use("/api/v1", roomRoutes);
 app.use("/api/v1", playerRoutes);
+app.use("/api/v1", questionRoutes);
 
 app.get("/", (req, res) => {
   res.send("HOME PAGE OF THE QUIZ APP!!!");
