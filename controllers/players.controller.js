@@ -18,7 +18,10 @@ export const joinLobby = asynchandler(async (req, res) => {
     throw new ApiError(404, "Room with that Code Not Found!!");
   }
 
-  const samePlayerName = await Players.findOne({ playerName: name });
+  const samePlayerName = await Players.findOne({
+    playerName: name,
+    room_code: roomcode,
+  });
 
   if (samePlayerName) {
     throw new ApiError(400, "Player with this name is Already in Lobby!!!");
