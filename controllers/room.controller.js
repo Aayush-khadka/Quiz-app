@@ -39,7 +39,7 @@ Each question should have:
       { role: "system", content: systemPrompt.trim() },
       { role: "user", content: userPrompt.trim() },
     ],
-    model: "mistral-saba-24b",
+    model: "qwen/qwen3-32b",
     temperature: 0.7,
     max_tokens: 1500,
     top_p: 1,
