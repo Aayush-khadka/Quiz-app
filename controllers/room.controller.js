@@ -18,21 +18,21 @@ export const createRoom = asynchandler(async (req, res) => {
   if (!topic || !difficulty || !no_question || !host_name) {
     throw new ApiError(
       400,
-      "Enter Topic, Difficulty , Host_name and Number of Questions!"
+      "Enter Topic, Difficulty, Host Name, and Number of Questions!"
     );
   }
 
   const systemPrompt = `
 You are a quiz generator bot.
-ONLY return a JSON array of ${no_question} quiz questions about "${topic}" at "${difficulty}" difficulty.
-Strictly avoid explanations, markdown, or any text outside JSON.
-Each question should have:
+ONLY return a raw JSON array of ${no_question} quiz questions about "${topic}" at "${difficulty}" difficulty.
+Strictly avoid any explanations, markdown, or text outside of the JSON array.
+Each question object must contain:
 - question (string)
 - options (array of 4 strings)
-- correct_answer (string matching one option)
+- correct_answer (string that matches one of the options)
 `;
 
-  const userPrompt = `Generate ${no_question} ${difficulty} quiz questions about ${topic} in JSON array format ONLY.`;
+  const userPrompt = `Generate ${no_question} ${difficulty} quiz questions about ${topic} in raw JSON array format ONLY.`;
 
   const completion = await groqClient.chat.completions.create({
     messages: [
@@ -46,26 +46,25 @@ Each question should have:
   });
 
   if (!completion) {
-    throw ApiError(
+    throw new ApiError(
       500,
-      "Failed To Generate Questions, Click Create Room Again!!"
+      "Failed to generate questions. Please try creating the room again!"
     );
   }
 
   let aiResponse = completion.choices[0]?.message?.content || "";
 
+  // Extract only the JSON array part
   const jsonStart = aiResponse.indexOf("[");
-  if (jsonStart === -1) {
-    throw new ApiError(500, "No JSON array found in AI response.", [
+  const jsonEnd = aiResponse.lastIndexOf("]") + 1;
+
+  if (jsonStart === -1 || jsonEnd === -1) {
+    throw new ApiError(500, "No valid JSON array found in AI response.", [
       aiResponse,
     ]);
   }
 
-  const jsonString = aiResponse
-    .slice(jsonStart)
-    .trim()
-    .replace(/^```json/, "")
-    .replace(/```$/, "");
+  const jsonString = aiResponse.slice(jsonStart, jsonEnd).trim();
 
   let quizQuestions;
   try {
@@ -83,27 +82,28 @@ Each question should have:
   }));
 
   try {
-    const roomInfoAndData = await Questions.create({
-      topic: topic,
-      difficulty: difficulty,
+    await Questions.create({
+      topic,
+      difficulty,
       no_questions: no_question,
-      room_code: room_code,
-      host_name: host_name,
+      room_code,
+      host_name,
       questions: allQuestions,
     });
-    console.log("Sucessfully Entered question in Database!!");
+
+    console.log("Successfully entered questions in database.");
     return res
       .status(201)
       .json(
         new ApiResponse(
           200,
           room_code,
-          "Quiz Successfully Generated Based On the Requirements!"
+          "Quiz successfully generated based on the requirements!"
         )
       );
   } catch (error) {
-    console.error("Failed to Enter Questions to Database!!", error);
-    throw new ApiError(500, error);
+    console.error("Failed to save questions to database:", error);
+    throw new ApiError(500, "Database insertion failed");
   }
 });
 

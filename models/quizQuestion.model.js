@@ -41,6 +41,11 @@ const questionsSchema = new Schema({
     type: [questionitemSchema],
     required: true,
   },
+  createdAt: {
+    type: Date,
+    default: Date.now,
+    expires: 24 * 60 * 60,
+  },
 });
 
 export const Questions = new mongoose.model("QuestionSet", questionsSchema);

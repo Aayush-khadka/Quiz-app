@@ -26,6 +26,11 @@ const playerSchema = new Schema({
     type: Boolean,
     default: false,
   },
+  createdAt: {
+    type: Date,
+    default: Date.now,
+    expires: 12 * 60 * 60,
+  },
 });
 
 export const Players = new mongoose.model("Players", playerSchema);
