@@ -12,12 +12,12 @@ export const joinLobby = asynchandler(async (req, res) => {
   if (!roomcode || !name) {
     throw new ApiError(400, "Room Code or the player's Name is Missing!!!");
   }
-  const DoesRoomExist = await Questions.findOne({ room_code: roomcode });
 
-  if (!DoesRoomExist) {
+  const doesRoomExist = await Questions.findOne({ room_code: roomcode });
+
+  if (!doesRoomExist) {
     throw new ApiError(404, "Room with that Code Not Found!!");
   }
-
   const samePlayerName = await Players.findOne({
     playerName: name,
     room_code: roomcode,
@@ -58,6 +58,10 @@ export const host = asynchandler(async (req, res) => {
   if (!hostName) {
     throw new ApiError(500, "failed to fetch Host name!!");
   }
+
+  console.log("=========================");
+  console.log(hostName);
+  console.log("=========================");
 
   res.status(200).json(new ApiResponse(200, hostName, "Got Hostname"));
 });

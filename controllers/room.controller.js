@@ -131,3 +131,15 @@ export const roomLobby = asynchandler(async (req, res) => {
     throw new ApiError(503, "failed to get request from server!!");
   }
 });
+
+export const isQuizStarted = asynchandler(async (req, res) => {
+  const { roomcode } = req.params;
+
+  const room = await Questions.findOne({ room_code: roomcode });
+
+  if (room.quizStarted == false) {
+    res.status(200).json(new ApiResponse(200, false, "Quiz has not Started!!"));
+  } else {
+    res.status(200).json(new ApiResponse(200, true, "Quiz Started!!"));
+  }
+});
