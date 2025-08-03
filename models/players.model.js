@@ -29,7 +29,7 @@ const playerSchema = new Schema({
   createdAt: {
     type: Date,
     default: Date.now,
-    expires: 12 * 60 * 60,
+    expires: 86400,
   },
 });
 

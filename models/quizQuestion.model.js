@@ -37,6 +37,10 @@ const questionsSchema = new Schema({
     type: String,
     required: true,
   },
+  quizStarted: {
+    type: Boolean,
+    default: false,
+  },
   questions: {
     type: [questionitemSchema],
     required: true,
@@ -44,7 +48,7 @@ const questionsSchema = new Schema({
   createdAt: {
     type: Date,
     default: Date.now,
-    expires: 24 * 60 * 60,
+    expires: 86400,
   },
 });
 
