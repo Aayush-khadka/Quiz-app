@@ -14,7 +14,6 @@ const groqClient = new groq({
 
 export const createRoom = asynchandler(async (req, res) => {
   const { topic, difficulty, no_question, host_name } = req.body;
-
   if (!topic || !difficulty || !no_question || !host_name) {
     throw new ApiError(
       400,
@@ -42,85 +41,116 @@ Your output must begin with "[" and end with "]" and contain ONLY valid JSON in 
   {
     "question": "string",
     "options": ["string", "string", "string", "string"],
-    "correct_answer": "string" // must exactly match one of the options
+    "correct_answer": "string"
   }
 ]
 
 The JSON array must contain exactly ${no_question} questions.
+Each question must be complete with all required fields.
 If you output anything other than valid JSON, your response will be rejected.
   `.trim();
 
   const userPrompt = `Generate ${no_question} ${difficulty} quiz questions about ${topic} in EXACT raw JSON array format ONLY, no extra text, no tags, no explanations.`;
 
   function extractJSONArray(text) {
-    const start = text.indexOf("[");
-    const end = text.lastIndexOf("]");
+    // Remove <think> tags first
+    let cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+
+    const start = cleaned.indexOf("[");
+    const end = cleaned.lastIndexOf("]");
     if (start === -1 || end === -1 || end <= start) return null;
-    return text.slice(start, end + 1).trim();
+
+    return cleaned.slice(start, end + 1).trim();
   }
 
   function validateQuizQuestions(questions) {
     if (!Array.isArray(questions)) return false;
     if (questions.length !== Number(no_question)) return false;
-    return questions.every(
-      (q) =>
-        typeof q === "object" &&
-        typeof q.question === "string" &&
-        Array.isArray(q.options) &&
-        q.options.length === 4 &&
-        q.options.every((opt) => typeof opt === "string") &&
-        typeof q.correct_answer === "string" &&
-        q.options.includes(q.correct_answer)
+
+    return questions.every((q) => {
+      // Check if object has all required fields and they're not empty
+      if (typeof q !== "object" || !q) return false;
+      if (typeof q.question !== "string" || q.question.trim() === "")
+        return false;
+      if (!Array.isArray(q.options) || q.options.length !== 4) return false;
+      if (
+        !q.options.every((opt) => typeof opt === "string" && opt.trim() !== "")
+      )
+        return false;
+      if (
+        typeof q.correct_answer !== "string" ||
+        q.correct_answer.trim() === ""
+      )
+        return false;
+      if (!q.options.includes(q.correct_answer)) return false;
+
+      return true;
+    });
+  }
+
+  // Try up to 3 times to get valid response
+  let attempts = 0;
+  const maxAttempts = 3;
+  let quizQuestions = null;
+
+  while (attempts < maxAttempts && !quizQuestions) {
+    attempts++;
+    console.log(`Attempt ${attempts} to generate questions...`);
+
+    try {
+      const completion = await groqClient.chat.completions.create({
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        model: "deepseek-r1-distill-llama-70b",
+        temperature: attempts > 1 ? 0.1 : 0.0, // Slightly increase temp on retry
+        max_tokens: 3500,
+        top_p: 1,
+      });
+
+      if (!completion) {
+        console.log(`Attempt ${attempts}: No completion received`);
+        continue;
+      }
+
+      const aiResponse = completion.choices[0]?.message?.content || "";
+
+      console.log("=".repeat(80));
+      console.log(`Attempt ${attempts} AI Response:`, aiResponse);
+      console.log("=".repeat(80));
+
+      const jsonString = extractJSONArray(aiResponse);
+      if (!jsonString) {
+        console.log(`Attempt ${attempts}: No valid JSON array found`);
+        continue;
+      }
+
+      try {
+        const parsed = JSON.parse(jsonString);
+        if (validateQuizQuestions(parsed)) {
+          quizQuestions = parsed;
+          console.log(`✅ Success on attempt ${attempts}!`);
+          break;
+        } else {
+          console.log(`Attempt ${attempts}: Validation failed`);
+        }
+      } catch (parseErr) {
+        console.log(`Attempt ${attempts}: JSON parse error:`, parseErr.message);
+      }
+    } catch (error) {
+      console.log(`Attempt ${attempts}: Request error:`, error.message);
+    }
+  }
+
+  if (!quizQuestions) {
+    throw new ApiError(
+      500,
+      `Failed to generate valid questions after ${maxAttempts} attempts`
     );
   }
 
-  const completion = await groqClient.chat.completions.create({
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userPrompt },
-    ],
-    model: "deepseek-r1-distill-llama-70b",
-    temperature: 0.0,
-    max_tokens: 3500,
-    top_p: 1,
-  });
-
-  if (!completion) {
-    throw new ApiError(500, "Failed to generate questions from AI.");
-  }
-
-  const aiResponse = completion.choices[0]?.message?.content || "";
-
-  // console.log(
-  //   "=========================================================================="
-  // );
-
-  // console.log("AI Response:", aiResponse);
-
-  // console.log(
-  //   "=========================================================================="
-  // );
-
-  const jsonString = extractJSONArray(aiResponse);
-  if (!jsonString) {
-    throw new ApiError(500, "No valid JSON array found in AI response.", [
-      aiResponse,
-    ]);
-  }
-
-  let quizQuestions;
-  try {
-    const parsed = JSON.parse(jsonString);
-    if (!validateQuizQuestions(parsed)) {
-      throw new Error("JSON structure or length is invalid.");
-    }
-    quizQuestions = parsed;
-  } catch (err) {
-    throw new ApiError(500, "Failed to parse AI JSON output.", [jsonString]);
-  }
-
   const room_code = generateRoomCode();
-
   const allQuestions = quizQuestions.map((element) => ({
     question: element.question,
     options: element.options,
@@ -203,4 +233,24 @@ export const roomInfo = asynchandler(async (req, res) => {
   }
 
   res.status(200).json(new ApiResponse(200, info, "Got Room info"));
+});
+
+export const quizStarted = asynchandler(async (req, res) => {
+  const { roomcode } = req.params;
+
+  const updatedQuiz = await Questions.findOneAndUpdate(
+    { room_code: roomcode },
+    { $set: { quizStarted: true } },
+    { new: true }
+  );
+
+  if (!updatedQuiz) {
+    return res.status(404).json(new ApiResponse(404, null, "Room not found"));
+  }
+
+  res
+    .status(200)
+    .json(
+      new ApiResponse(200, updatedQuiz, "Updated quiz status successfully!")
+    );
 });
