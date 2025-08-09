@@ -23,6 +23,13 @@ export const joinLobby = asynchandler(async (req, res) => {
     room_code: roomcode,
   });
 
+  if (doesRoomExist.quizStarted == true) {
+    throw new ApiError(
+      500,
+      "The Quiz Already Started Wait for Host to Start a new game!!!"
+    );
+  }
+
   if (samePlayerName) {
     throw new ApiError(400, "Player with this name is Already in Lobby!!!");
   }

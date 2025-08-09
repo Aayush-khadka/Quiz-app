@@ -335,6 +335,7 @@ export default function roomSocketHandler(io) {
     socket.on("start-quiz", async ({ roomCode }) => {
       try {
         const questions = await getQuestionsFromDB(roomCode);
+
         io.to(roomCode).emit("quiz-started", questions);
         console.log(`🎯 Quiz started for room ${roomCode}`);
       } catch (error) {
