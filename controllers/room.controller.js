@@ -26,11 +26,11 @@ You are a strict quiz question generator API.
 
 **Your ONLY allowed output is a valid JSON array.**
 ABSOLUTELY NO:
+- <think> tags
 - Explanations
 - Comments
 - Greetings
 - Thoughts
-- <think> tags
 - Markdown
 - Backticks
 - Text before or after the JSON
@@ -88,7 +88,6 @@ If you output anything other than valid JSON, your response will be rejected.
     });
   }
 
-  // Try up to 3 times to get valid response
   let attempts = 0;
   const maxAttempts = 3;
   let quizQuestions = null;
@@ -104,7 +103,7 @@ If you output anything other than valid JSON, your response will be rejected.
           { role: "user", content: userPrompt },
         ],
         model: "deepseek-r1-distill-llama-70b",
-        temperature: attempts > 1 ? 0.1 : 0.0, // Slightly increase temp on retry
+        temperature: 0.0,
         max_tokens: 3500,
         top_p: 1,
       });
