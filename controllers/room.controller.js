@@ -22,20 +22,20 @@ export const createRoom = asynchandler(async (req, res) => {
   }
 
   const systemPrompt = `
-You are a strict quiz question generator API.
+You are a strict quiz question generator API that MUST generate EXACTLY ${no_question} questions.
 
 **Your ONLY allowed output is a valid JSON array.**
 ABSOLUTELY NO:
-- <think> tags
-- Explanations
-- Comments
-- Greetings
-- Thoughts
-- Markdown
-- Backticks
-- Text before or after the JSON
+- <think> tags or any XML tags
+- Explanations before or after JSON
+- Comments or markdown
+- Greetings or thoughts
+- Backticks or code blocks
+- Any text outside the JSON array
 
-Your output must begin with "[" and end with "]" and contain ONLY valid JSON in this structure:
+CRITICAL: Generate EXACTLY ${no_question} questions, no more, no less.
+
+Your output must begin with "[" and end with "]" and contain ONLY valid JSON in this exact structure:
 
 [
   {
@@ -45,56 +45,120 @@ Your output must begin with "[" and end with "]" and contain ONLY valid JSON in 
   }
 ]
 
-The JSON array must contain exactly ${no_question} questions.
-Each question must be complete with all required fields.
-If you output anything other than valid JSON, your response will be rejected.
+Requirements:
+- Generate EXACTLY ${no_question} questions
+- Each question must have exactly 4 options
+- The correct_answer must be one of the 4 options
+- All fields must be non-empty strings
+- No duplicate questions
+- Topic: ${topic}
+- Difficulty: ${difficulty}
+
+If you output anything other than valid JSON with exactly ${no_question} questions, your response will be rejected.
   `.trim();
 
-  const userPrompt = `Generate ${no_question} ${difficulty} quiz questions about ${topic} in EXACT raw JSON array format ONLY, no extra text, no tags, no explanations.`;
+  const userPrompt = `Generate EXACTLY ${no_question} ${difficulty} level quiz questions about ${topic}. Output ONLY the raw JSON array with no extra text, tags, or explanations. Must be exactly ${no_question} questions.`;
 
   function extractJSONArray(text) {
-    // Remove <think> tags first
-    let cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+    // Remove any XML tags including <think> tags
+    let cleaned = text.replace(/<[^>]*>/g, "").trim();
 
+    // Remove any markdown code blocks
+    cleaned = cleaned
+      .replace(/```json\s*/g, "")
+      .replace(/```\s*/g, "")
+      .trim();
+
+    // Find the JSON array boundaries
     const start = cleaned.indexOf("[");
     const end = cleaned.lastIndexOf("]");
-    if (start === -1 || end === -1 || end <= start) return null;
 
-    return cleaned.slice(start, end + 1).trim();
+    if (start === -1 || end === -1 || end <= start) {
+      console.log("No valid JSON array found in response");
+      return null;
+    }
+
+    const jsonString = cleaned.slice(start, end + 1).trim();
+    console.log("Extracted JSON string:", jsonString.substring(0, 200) + "...");
+
+    return jsonString;
   }
 
   function validateQuizQuestions(questions) {
-    if (!Array.isArray(questions)) return false;
-    if (questions.length !== Number(no_question)) return false;
+    if (!Array.isArray(questions)) {
+      console.log("Validation failed: Not an array");
+      return false;
+    }
 
-    return questions.every((q) => {
+    if (questions.length !== Number(no_question)) {
+      console.log(
+        `Validation failed: Expected ${no_question} questions, got ${questions.length}`
+      );
+      return false;
+    }
+
+    for (let i = 0; i < questions.length; i++) {
+      const q = questions[i];
+
       // Check if object has all required fields and they're not empty
-      if (typeof q !== "object" || !q) return false;
-      if (typeof q.question !== "string" || q.question.trim() === "")
+      if (typeof q !== "object" || !q) {
+        console.log(
+          `Validation failed: Question ${i + 1} is not a valid object`
+        );
         return false;
-      if (!Array.isArray(q.options) || q.options.length !== 4) return false;
+      }
+
+      if (typeof q.question !== "string" || q.question.trim() === "") {
+        console.log(
+          `Validation failed: Question ${i + 1} has invalid question field`
+        );
+        return false;
+      }
+
+      if (!Array.isArray(q.options) || q.options.length !== 4) {
+        console.log(
+          `Validation failed: Question ${i + 1} doesn't have exactly 4 options`
+        );
+        return false;
+      }
+
       if (
         !q.options.every((opt) => typeof opt === "string" && opt.trim() !== "")
-      )
+      ) {
+        console.log(`Validation failed: Question ${i + 1} has invalid options`);
         return false;
+      }
+
       if (
         typeof q.correct_answer !== "string" ||
         q.correct_answer.trim() === ""
-      )
+      ) {
+        console.log(
+          `Validation failed: Question ${i + 1} has invalid correct_answer`
+        );
         return false;
-      if (!q.options.includes(q.correct_answer)) return false;
+      }
 
-      return true;
-    });
+      if (!q.options.includes(q.correct_answer)) {
+        console.log(
+          `Validation failed: Question ${i + 1} correct_answer not in options`
+        );
+        console.log(`Correct answer: "${q.correct_answer}"`);
+        console.log(`Options:`, q.options);
+        return false;
+      }
+    }
+
+    return true;
   }
 
   let attempts = 0;
-  const maxAttempts = 3;
+  const maxAttempts = 5; // Increased attempts
   let quizQuestions = null;
 
   while (attempts < maxAttempts && !quizQuestions) {
     attempts++;
-    console.log(`Attempt ${attempts} to generate questions...`);
+    console.log(`Attempt ${attempts} to generate ${no_question} questions...`);
 
     try {
       const completion = await groqClient.chat.completions.create({
@@ -103,21 +167,27 @@ If you output anything other than valid JSON, your response will be rejected.
           { role: "user", content: userPrompt },
         ],
         model: "deepseek-r1-distill-llama-70b",
-        temperature: 0.0,
-        max_tokens: 3500,
-        top_p: 1,
+        temperature: 0.1, // Slightly increased for variety but still low
+        max_tokens: 4000, // Increased token limit
+        top_p: 0.9,
+        stop: ["\n\n", "```"], // Stop sequences to prevent extra content
       });
 
-      if (!completion) {
+      if (!completion || !completion.choices || !completion.choices[0]) {
         console.log(`Attempt ${attempts}: No completion received`);
         continue;
       }
 
       const aiResponse = completion.choices[0]?.message?.content || "";
 
-      console.log("=".repeat(80));
-      console.log(`Attempt ${attempts} AI Response:`, aiResponse);
-      console.log("=".repeat(80));
+      console.log("=".repeat(50));
+      console.log(`Attempt ${attempts} AI Response Length:`, aiResponse.length);
+      console.log("First 300 chars:", aiResponse.substring(0, 300));
+      console.log(
+        "Last 100 chars:",
+        aiResponse.substring(aiResponse.length - 100)
+      );
+      console.log("=".repeat(50));
 
       const jsonString = extractJSONArray(aiResponse);
       if (!jsonString) {
@@ -127,37 +197,59 @@ If you output anything other than valid JSON, your response will be rejected.
 
       try {
         const parsed = JSON.parse(jsonString);
+        console.log(`Parsed ${parsed.length} questions`);
+
         if (validateQuizQuestions(parsed)) {
           quizQuestions = parsed;
-          console.log(`✅ Success on attempt ${attempts}!`);
+          console.log(
+            `✅ Success on attempt ${attempts}! Generated ${parsed.length} questions.`
+          );
           break;
         } else {
           console.log(`Attempt ${attempts}: Validation failed`);
         }
       } catch (parseErr) {
         console.log(`Attempt ${attempts}: JSON parse error:`, parseErr.message);
+        console.log(
+          "JSON string that failed to parse:",
+          jsonString.substring(0, 500)
+        );
       }
     } catch (error) {
       console.log(`Attempt ${attempts}: Request error:`, error.message);
+
+      // Add exponential backoff for rate limiting
+      if (
+        error.message.includes("rate limit") ||
+        error.message.includes("429")
+      ) {
+        const delay = Math.pow(2, attempts) * 1000; // Exponential backoff
+        console.log(`Rate limited. Waiting ${delay}ms before retry...`);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
     }
   }
 
   if (!quizQuestions) {
+    console.error(
+      `Failed to generate valid questions after ${maxAttempts} attempts`
+    );
     throw new ApiError(
       500,
-      `Failed to generate valid questions after ${maxAttempts} attempts`
+      `Failed to generate valid questions after ${maxAttempts} attempts. Please try again with different parameters.`
     );
   }
 
   const room_code = generateRoomCode();
-  const allQuestions = quizQuestions.map((element) => ({
+  const allQuestions = quizQuestions.map((element, index) => ({
     question: element.question,
     options: element.options,
     correct_option: element.correct_answer,
+    question_number: index + 1, // Adding question number for better tracking
   }));
 
   try {
-    await Questions.create({
+    const savedRoom = await Questions.create({
       topic,
       difficulty,
       no_questions: no_question,
@@ -166,19 +258,24 @@ If you output anything other than valid JSON, your response will be rejected.
       questions: allQuestions,
     });
 
-    console.log("Successfully entered questions in database.");
-    return res
-      .status(201)
-      .json(
-        new ApiResponse(
-          200,
+    console.log(
+      `Successfully created room ${room_code} with ${allQuestions.length} questions`
+    );
+    return res.status(201).json(
+      new ApiResponse(
+        201, // Changed from 200 to 201 for created resource
+        {
           room_code,
-          "Quiz successfully generated based on the requirements!"
-        )
-      );
+          questions_count: allQuestions.length,
+          topic,
+          difficulty,
+        },
+        "Quiz successfully generated based on the requirements!"
+      )
+    );
   } catch (error) {
     console.error("Failed to save questions to database:", error);
-    throw new ApiError(500, "Database insertion failed");
+    throw new ApiError(500, "Database insertion failed: " + error.message);
   }
 });
 
