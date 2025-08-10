@@ -1,8 +1,13 @@
 import { ApiError } from "../utils/ApiError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import { asynchandler } from "../utils/asyncHandler.js";
-
+import groq from "groq-sdk";
 import { Questions } from "../models/quizQuestion.model.js";
+import dotenv from "dotenv";
+dotenv.config();
+const groqClient = new groq({
+  apiKey: process.env.GROQ_API_KEY,
+});
 
 export const getQuestion = asynchandler(async (req, res) => {
   const { roomcode } = req.params;
@@ -145,114 +150,178 @@ export const generateMoreQuestions = asynchandler(async (req, res) => {
   const { id } = req.params;
 
   if (!id) {
+    throw new ApiError(400, "Room ID is required!");
+  }
+
+  const questionSet = await Questions.findOne({ _id: id });
+
+  if (!questionSet) {
+    throw new ApiError(404, "Quiz room not found!");
+  }
+
+  const currentQuestionCount = questionSet.questions.length;
+  const maxQuestions = questionSet.no_questions;
+  const questionsNeeded = maxQuestions - currentQuestionCount;
+
+  if (questionsNeeded <= 0) {
     throw new ApiError(
       400,
-      "Enter Topic, Difficulty, similarquestions,  Number of Questions and ID!!"
+      `Maximum questions limit reached! Current: ${currentQuestionCount}/${maxQuestions}`
     );
   }
 
-  const QuestionSet = await Questions.findOne(
-    { _id: id },
-    {
-      topic: 1,
-      difficulty: 1,
-      questions: 1,
-      no_questions: 1,
+  const topic = questionSet.topic;
+  const difficulty = questionSet.difficulty;
+
+  const existingQuestions = questionSet.questions.map((q) => q.question);
+  const existingQuestionsText =
+    existingQuestions.length > 0
+      ? `\n\nExisting questions to avoid duplicating:\n${existingQuestions
+          .map((q, i) => `${i + 1}. ${q}`)
+          .join("\n")}`
+      : "";
+
+  const prompt = `Generate exactly ${questionsNeeded} quiz questions about "${topic}" with ${difficulty} difficulty level.
+Return ONLY a JSON array in this exact format (no extra text):
+[
+  {
+    "question": "What is 2+2?",
+    "options": ["3", "4", "5", "6"],
+    "correct_answer": "4"
+  }
+]
+
+Requirements:
+- Exactly ${questionsNeeded} questions
+- Each question has exactly 4 options
+- correct_answer must match one of the options exactly
+- Make sure the correct answer is randomized (not always A, B, C, or D)
+- Questions should be unique and different from existing ones
+- Match the ${difficulty} difficulty level
+- Stay focused on the topic: ${topic}${existingQuestionsText}`;
+
+  try {
+    const completion = await groqClient.chat.completions.create({
+      messages: [{ role: "user", content: prompt }],
+      model: "deepseek-r1-distill-llama-70b",
+      temperature: 0.3,
+      max_tokens: 3000,
+    });
+
+    const aiResponse = completion.choices[0]?.message?.content || "";
+    let jsonString = aiResponse.trim();
+
+    if (jsonString.includes("```json")) {
+      const start = jsonString.indexOf("[");
+      const end = jsonString.lastIndexOf("]");
+      if (start !== -1 && end !== -1) {
+        jsonString = jsonString.substring(start, end + 1);
+      }
+    } else if (!jsonString.startsWith("[")) {
+      const start = jsonString.indexOf("[");
+      const end = jsonString.lastIndexOf("]");
+      if (start !== -1 && end !== -1) {
+        jsonString = jsonString.substring(start, end + 1);
+      }
     }
-  );
 
-  const no_question = QuestionSet.no_questions - QuestionSet.questions.length;
+    let quizQuestions;
+    try {
+      quizQuestions = JSON.parse(jsonString);
+    } catch (parseError) {
+      console.error("JSON Parse Error:", parseError);
+      console.error("AI Response:", aiResponse);
+      throw new ApiError(500, "AI returned invalid JSON format");
+    }
 
-  const topic = QuestionSet.topic;
-  const difficulty = QuestionSet.difficulty;
-  const similarquestions = QuestionSet.questions.map((element) => ({
-    question: element.question,
-  }));
+    if (!Array.isArray(quizQuestions)) {
+      throw new ApiError(500, "AI didn't return a question array");
+    }
 
-  if (no_question == 0) {
-    throw new ApiError(
-      400,
-      `According to the previous slections of ${QuestionSet.no_questions} is Already present!!`
-    );
-  }
+    const requestedCount = parseInt(questionsNeeded);
+    if (quizQuestions.length > requestedCount) {
+      console.log(
+        `AI returned ${quizQuestions.length} questions, taking first ${requestedCount}`
+      );
+      quizQuestions = quizQuestions.slice(0, requestedCount);
+    } else if (quizQuestions.length < requestedCount) {
+      throw new ApiError(
+        500,
+        `AI returned insufficient questions: expected ${requestedCount} but got ${quizQuestions.length}`
+      );
+    }
 
-  const systemPrompt = `
-You are a quiz generator bot.
-ONLY return a JSON array of ${no_question} quiz questions about "${topic}" at "${difficulty}" difficulty.
-Strictly avoid explanations, markdown, or any text outside JSON.
-Each question should have:
-- question (string)
-- options (array of 4 strings)
-- correct_answer (string matching one option)
-`;
+    for (let i = 0; i < quizQuestions.length; i++) {
+      const q = quizQuestions[i];
+      if (!q.question || !q.options || !q.correct_answer) {
+        throw new ApiError(500, `Question ${i + 1} is missing required fields`);
+      }
+      if (!Array.isArray(q.options) || q.options.length !== 4) {
+        throw new ApiError(
+          500,
+          `Question ${i + 1} must have exactly 4 options`
+        );
+      }
+      if (!q.options.includes(q.correct_answer)) {
+        throw new ApiError(
+          500,
+          `Question ${i + 1} correct answer doesn't match any option`
+        );
+      }
+    }
 
-  const userPrompt = `Generate ${no_question} ${difficulty} quiz questions about ${topic} in JSON array format ONLY. These are already generated Questions so dont repeat this and make sure the question follow similar type and have simialr level of difficulty ${similarquestions}`;
+    // Format questions to match the database schema
+    const newQuestions = quizQuestions.map((element, index) => ({
+      question: element.question,
+      options: element.options,
+      correct_option: element.correct_answer,
+      question_number: currentQuestionCount + index + 1, // Continue numbering from existing questions
+    }));
 
-  const completion = await groqClient.chat.completions.create({
-    messages: [
-      { role: "system", content: systemPrompt.trim() },
-      { role: "user", content: userPrompt.trim() },
-    ],
-    model: "mistral-saba-24b",
-    temperature: 0.7,
-    max_tokens: 1500,
-    top_p: 1,
-  });
-
-  if (!completion) {
-    throw ApiError(
-      500,
-      "Failed Generating More Questions Click Generate Again!!"
-    );
-  }
-
-  let aiResponse = completion.choices[0]?.message?.content || "";
-
-  const jsonStart = aiResponse.indexOf("[");
-  if (jsonStart === -1) {
-    throw new ApiError(500, "No JSON array found in AI response.", [
-      aiResponse,
-    ]);
-  }
-
-  const jsonString = aiResponse
-    .slice(jsonStart)
-    .trim()
-    .replace(/^```json/, "")
-    .replace(/```$/, "");
-
-  let quizQuestions;
-  try {
-    quizQuestions = JSON.parse(jsonString);
-  } catch (err) {
-    throw new ApiError(500, "Failed to parse AI JSON output.", [jsonString]);
-  }
-
-  const newQuestions = quizQuestions.map((element) => ({
-    question: element.question,
-    options: element.options,
-    correct_option: element.correct_answer,
-  }));
-
-  try {
-    const updatedSet = await Questions.findOneAndUpdate(
+    // Update the database with new questions
+    const updatedQuestionSet = await Questions.findOneAndUpdate(
       { _id: id },
       { $push: { questions: { $each: newQuestions } } },
       { new: true, runValidators: true }
     );
 
-    console.log("Sucessfully Entered More question in Database!!");
-    return res
-      .status(201)
-      .json(
-        new ApiResponse(
-          200,
-          updatedSet,
-          "Additional Quiz Questions Successfully Generated Based On the Requirements!"
-        )
-      );
+    if (!updatedQuestionSet) {
+      throw new ApiError(500, "Failed to update questions in database");
+    }
+
+    console.log(
+      `Successfully added ${newQuestions.length} more questions to quiz room ${id}`
+    );
+
+    return res.status(200).json(
+      new ApiResponse(
+        200,
+        {
+          room_code: updatedQuestionSet.room_code,
+          questions_added: newQuestions.length,
+          total_questions: updatedQuestionSet.questions.length,
+          max_questions: updatedQuestionSet.no_questions,
+          topic: updatedQuestionSet.topic,
+          difficulty: updatedQuestionSet.difficulty,
+        },
+        `Successfully generated ${newQuestions.length} additional questions!`
+      )
+    );
   } catch (error) {
-    console.error("Failed to add new questions:", error);
-    throw new ApiError(500, error.message || "Something Went Wrong!!!");
+    if (error instanceof ApiError) {
+      throw error; // Re-throw our custom errors
+    }
+
+    // Handle unexpected errors
+    console.error("Generate more questions error:", {
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+    });
+
+    throw new ApiError(
+      500,
+      "Failed to generate additional questions: " + error.message
+    );
   }
 });
